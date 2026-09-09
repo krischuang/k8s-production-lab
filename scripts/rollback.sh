@@ -23,8 +23,13 @@ kubectl -n "${NAMESPACE}" get pods -l app=inventory-api -o wide
 
 echo
 echo "==> Confirming FAIL_READINESS is cleared"
-kubectl -n "${NAMESPACE}" get deployment "${DEPLOYMENT}" \
-  -o jsonpath='{.spec.template.spec.containers[0].env}' | tr ',' '\n'
+ENV_JSON=$(kubectl -n "${NAMESPACE}" get deployment "${DEPLOYMENT}" \
+  -o jsonpath='{.spec.template.spec.containers[0].env}')
+if [[ -z "${ENV_JSON}" ]]; then
+  echo "    no container-level env overrides present (back to the original template)"
+else
+  echo "${ENV_JSON}"
+fi
 
 echo
 echo "==> Rollback verified."

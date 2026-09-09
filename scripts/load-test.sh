@@ -1,35 +1,39 @@
 #!/usr/bin/env bash
-# Generates sustained load against /api/items to push CPU usage past the
-# HPA's 60% target. Uses plain curl in parallel loops so the only dependency
-# is curl itself. Run scripts/watch-hpa.sh (or the kubectl commands it
-# prints) in another terminal while this runs.
+# Generates sustained load against the Ingress (the same path real traffic
+# takes) to push CPU usage past the HPA's 60% target. Hitting the Ingress
+# instead of port-forwarding straight to a pod matters here: nginx
+# load-balances across all inventory-api pods, so CPU load actually spreads
+# the way it would under real traffic. A port-forward to the Service, by
+# contrast, pins the whole session to a single pod and never triggers a
+# realistic scale-out.
 set -euo pipefail
 
-NAMESPACE="inventory-prod"
 DURATION_SECONDS="${1:-180}"
-CONCURRENCY="${2:-20}"
-PORT=18081
+CONCURRENCY="${2:-40}"
+INGRESS_URL="http://localhost:8080/api/items"
+HOST_HEADER="inventory.local"
 
-echo "==> Port-forwarding svc/inventory-api to localhost:${PORT}"
-kubectl -n "${NAMESPACE}" port-forward svc/inventory-api "${PORT}:80" >/tmp/inventory-api-load-test-pf.log 2>&1 &
-PF_PID=$!
+if ! curl -sf -H "Host: ${HOST_HEADER}" "${INGRESS_URL}" >/dev/null 2>&1; then
+  echo "ERROR: cannot reach ${INGRESS_URL} (Host: ${HOST_HEADER})." >&2
+  echo "Is the kind cluster up with the ingress-nginx hostPort mapping (infra/kind-config.yaml)?" >&2
+  exit 1
+fi
+
+echo "==> Generating load for ${DURATION_SECONDS}s with ${CONCURRENCY} concurrent workers"
+echo "    Watch it with:  kubectl get hpa -n inventory-prod -w"
+echo "    Or:             kubectl top pods -n inventory-prod"
+
 cleanup() {
-  echo "==> Stopping load generators and port-forward"
+  echo "==> Stopping load generators"
   kill $(jobs -p) 2>/dev/null || true
 }
 trap cleanup EXIT
-
-sleep 2
-
-echo "==> Generating load for ${DURATION_SECONDS}s with ${CONCURRENCY} concurrent workers"
-echo "    Watch it with:  kubectl get hpa -n ${NAMESPACE} -w"
-echo "    Or:             kubectl top pods -n ${NAMESPACE}"
 
 END=$((SECONDS + DURATION_SECONDS))
 for _ in $(seq 1 "${CONCURRENCY}"); do
   (
     while [[ ${SECONDS} -lt ${END} ]]; do
-      curl -sf "http://localhost:${PORT}/api/items" -o /dev/null || true
+      curl -sf -H "Host: ${HOST_HEADER}" "${INGRESS_URL}" -o /dev/null || true
     done
   ) &
 done

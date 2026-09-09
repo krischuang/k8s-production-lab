@@ -45,13 +45,13 @@ done
 
 echo
 echo "==> GET /health/live"
-curl -sf "http://localhost:${PORT}/health/live" | tee /dev/stderr
+curl -sf "http://localhost:${PORT}/health/live"
 echo
 echo "==> GET /health/ready"
-curl -sf "http://localhost:${PORT}/health/ready" | tee /dev/stderr
+curl -sf "http://localhost:${PORT}/health/ready"
 echo
 echo "==> GET /api/items"
-curl -sf "http://localhost:${PORT}/api/items" | tee /dev/stderr
+curl -sf "http://localhost:${PORT}/api/items"
 echo
 
 kill "${PF_PID}" 2>/dev/null || true

@@ -15,8 +15,8 @@ echo "==> Triggering a bad release: setting FAIL_READINESS=true"
 kubectl -n "${NAMESPACE}" set env "deployment/${DEPLOYMENT}" FAIL_READINESS=true
 
 echo
-echo "==> Rollout status (this will NOT converge -- Ctrl-C after ~20s, that's the point)"
-timeout 20 kubectl -n "${NAMESPACE}" rollout status "deployment/${DEPLOYMENT}" || true
+echo "==> Rollout status (this will NOT converge within the timeout -- that's the point)"
+kubectl -n "${NAMESPACE}" rollout status "deployment/${DEPLOYMENT}" --timeout=25s || true
 
 echo
 echo "==> kubectl get deployments"
@@ -27,9 +27,10 @@ echo "==> kubectl get pods"
 kubectl -n "${NAMESPACE}" get pods -l app=inventory-api -o wide
 
 echo
-echo "==> kubectl describe pod (first new pod)"
+echo "==> kubectl describe pod (new pod, waiting for readiness failures to accumulate)"
 BAD_POD=$(kubectl -n "${NAMESPACE}" get pods -l app=inventory-api \
   --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1].metadata.name}')
+sleep 15
 kubectl -n "${NAMESPACE}" describe pod "${BAD_POD}" | tail -25
 
 echo
