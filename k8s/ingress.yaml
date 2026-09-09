@@ -1,0 +1,23 @@
+# Requires an ingress-nginx controller in the cluster (installed by
+# scripts/setup-cluster.sh). Routes external traffic for inventory.local to
+# the ClusterIP Service, which load-balances across the 3 API pods.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: inventory-api
+  namespace: inventory-prod
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: inventory.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: inventory-api
+                port:
+                  number: 80

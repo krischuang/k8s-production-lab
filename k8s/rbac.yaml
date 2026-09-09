@@ -1,0 +1,38 @@
+# Least-privilege RBAC for the inventory-api ServiceAccount.
+#
+# The application itself doesn't call the Kubernetes API today, but granting
+# a scoped Role instead of leaving the default ServiceAccount token
+# unconstrained is the pattern used here: if the pod is ever compromised, the
+# blast radius is "read two named objects in one namespace", not "read every
+# Secret in inventory-prod" (the default ServiceAccount effectively has zero
+# permissions until bound to a Role, but being explicit documents intent and
+# scales safely if the app later needs to, e.g., read its own config at
+# runtime instead of via env vars).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: inventory-api-config-reader
+  namespace: inventory-prod
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["inventory-api-config"]
+    verbs: ["get", "watch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["inventory-db-credentials"]
+    verbs: ["get", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: inventory-api-config-reader
+  namespace: inventory-prod
+subjects:
+  - kind: ServiceAccount
+    name: inventory-api
+    namespace: inventory-prod
+roleRef:
+  kind: Role
+  name: inventory-api-config-reader
+  apiGroup: rbac.authorization.k8s.io

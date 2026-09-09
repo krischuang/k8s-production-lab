@@ -1,0 +1,14 @@
+# Non-sensitive application configuration. Safe to read, diff, and log.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: inventory-api-config
+  namespace: inventory-prod
+data:
+  APP_ENV: "production"
+  READINESS_DELAY_SECONDS: "5"
+  DB_CONNECT_TIMEOUT_SECONDS: "2"
+  FAIL_READINESS: "false"
+  POSTGRES_HOST: "postgres.inventory-prod.svc.cluster.local"
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: "inventory"

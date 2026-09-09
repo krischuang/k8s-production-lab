@@ -1,0 +1,82 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inventory-api
+  namespace: inventory-prod
+  labels:
+    app: inventory-api
+spec:
+  replicas: 3
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # maxUnavailable: 0 means the old pod is never removed before a new,
+      # ready pod is in place. Combined with maxSurge: 1, a rollout adds one
+      # extra pod at a time, waits for it to pass readiness, then retires one
+      # old pod, cycling through 3 replicas without ever dropping capacity.
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: inventory-api
+  template:
+    metadata:
+      labels:
+        app: inventory-api
+    spec:
+      serviceAccountName: inventory-api
+      # Spread the 3 replicas across nodes instead of allowing the scheduler
+      # to stack them. whenUnsatisfiable: ScheduleAnyway keeps the Deployment
+      # schedulable even when the cluster doesn't have enough nodes to spread
+      # perfectly (e.g. a single-node dev cluster) -- see README "Scheduling
+      # and availability" for what happens when replicas > nodes.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: inventory-api
+      containers:
+        - name: inventory-api
+          image: inventory-api:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+              name: http
+          envFrom:
+            - configMapRef:
+                name: inventory-api-config
+            - secretRef:
+                name: inventory-db-credentials
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            failureThreshold: 3
+            timeoutSeconds: 2
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+            timeoutSeconds: 2
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]

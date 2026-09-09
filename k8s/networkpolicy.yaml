@@ -1,0 +1,110 @@
+# Default-deny plus narrow allow rules. See README "Networking" for a full
+# walkthrough of why each rule exists.
+---
+# 1. Deny all ingress and egress for every pod in the namespace unless a
+#    more specific policy below allows it. NetworkPolicies are additive, so
+#    this establishes the baseline that everything else punches holes in.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: inventory-prod
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# 2. Only the ingress-nginx controller may reach the API pods, and only on
+#    the application port. Nothing in-namespace or in another namespace can
+#    talk to the API pods directly.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-from-nginx
+  namespace: inventory-prod
+spec:
+  podSelector:
+    matchLabels:
+      app: inventory-api
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8000
+---
+# 3. Every pod needs to resolve DNS (Service names, external hosts). Without
+#    this rule, default-deny-all would also block DNS lookups since kube-dns
+#    is a normal pod-to-pod connection subject to the same egress policy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: inventory-prod
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# 4. Database egress: the API pods may only reach Postgres, and only on
+#    5432. This is what makes it meaningful that the API pods have
+#    DATABASE_URL at all -- without this policy present, default-deny would
+#    silently break every /health/ready call. NetworkPolicy enforces both
+#    ends of a connection independently, so this egress rule on the API pods
+#    is paired with the matching ingress rule on Postgres below.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-api-egress-to-postgres
+  namespace: inventory-prod
+spec:
+  podSelector:
+    matchLabels:
+      app: inventory-api
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+---
+# 5. Ingress side of the same connection: only the API pods may connect to
+#    Postgres. Nothing else in the namespace can reach the database.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-postgres-ingress-from-api
+  namespace: inventory-prod
+spec:
+  podSelector:
+    matchLabels:
+      app: postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: inventory-api
+      ports:
+        - protocol: TCP
+          port: 5432

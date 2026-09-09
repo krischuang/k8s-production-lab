@@ -1,0 +1,13 @@
+# Guarantees at least 2 of the 3+ inventory-api pods stay available during
+# voluntary disruptions (node drain, cluster upgrade, descheduler action).
+# Does not protect against involuntary disruption (node crash).
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: inventory-api
+  namespace: inventory-prod
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: inventory-api
