@@ -1,0 +1,18 @@
+# ClusterIP only -- reached locally via `kubectl port-forward` (see
+# scripts/dashboard.sh), not exposed through the Ingress. See
+# k8s/observer-networkpolicy.yaml for why that's a deliberate choice.
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-observer
+  namespace: inventory-prod
+  labels:
+    app: demo-observer
+spec:
+  type: ClusterIP
+  selector:
+    app: demo-observer
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

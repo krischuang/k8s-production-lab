@@ -1,0 +1,42 @@
+# demo-observer is a separate identity from inventory-api specifically so the
+# dashboard's read access to cluster state never has to touch inventory-api's
+# own RBAC (k8s/rbac.yaml). See README "Kubernetes observer architecture".
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: demo-observer
+  namespace: inventory-prod
+automountServiceAccountToken: true
+---
+# Read-only, and only for the four resource kinds the dashboard actually
+# renders. No wildcard verbs, no wildcard resources, no cluster-admin, no
+# write verbs, no access outside inventory-prod.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: demo-observer-read-only
+  namespace: inventory-prod
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: demo-observer-read-only
+  namespace: inventory-prod
+subjects:
+  - kind: ServiceAccount
+    name: demo-observer
+    namespace: inventory-prod
+roleRef:
+  kind: Role
+  name: demo-observer-read-only
+  apiGroup: rbac.authorization.k8s.io

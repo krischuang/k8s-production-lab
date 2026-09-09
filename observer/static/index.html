@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>k8s-production-lab &middot; live demo</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Kubernetes Production Lab</h1>
+      <p>inventory-api &middot; namespace <code>inventory-prod</code> &middot; observed read-only via <code>demo-observer</code></p>
+    </div>
+    <span id="overall-health" class="pill neutral">CHECKING&hellip;</span>
+  </header>
+
+  <div class="grid">
+
+    <section class="card">
+      <h2>Application Health</h2>
+      <div class="stat-row">
+        <span class="label">Version</span>
+        <span class="value" id="app-version">&ndash;</span>
+      </div>
+      <div class="stat-row">
+        <span class="label">Replicas</span>
+        <span class="value" id="replica-summary">&ndash;</span>
+      </div>
+      <div class="stat-row">
+        <span class="label">Updated / Available</span>
+        <span class="value" id="replica-detail">&ndash;</span>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Autoscaling (HPA)</h2>
+      <div class="stat-row"><span class="label">Current replicas</span><span class="value" id="hpa-current">&ndash;</span></div>
+      <div class="stat-row"><span class="label">Desired replicas</span><span class="value" id="hpa-desired">&ndash;</span></div>
+      <div class="stat-row"><span class="label">Minimum</span><span class="value" id="hpa-min">&ndash;</span></div>
+      <div class="stat-row"><span class="label">Maximum</span><span class="value" id="hpa-max">&ndash;</span></div>
+      <div class="stat-row"><span class="label">CPU utilization</span><span class="value" id="hpa-cpu">&ndash;</span></div>
+      <div class="stat-row"><span class="label">Target</span><span class="value" id="hpa-target">&ndash;</span></div>
+      <div class="hint">
+        Generate load to watch replicas scale in real time:<br />
+        <code>./scripts/load-test.sh 240 60</code>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Deployment Status</h2>
+      <div class="stat-row"><span class="label">Rollout</span><span class="value" id="rollout-state">&ndash;</span></div>
+      <div class="stat-row"><span class="label">Healthy old replicas</span><span class="value" id="rollout-old">&ndash;</span></div>
+      <div class="stat-row"><span class="label">New replicas</span><span class="value" id="rollout-new">&ndash;</span></div>
+      <div class="stat-row"><span class="label">Ready new replicas</span><span class="value" id="rollout-new-ready">&ndash;</span></div>
+      <div class="stat-row"><span class="label">Service</span><span class="value" id="rollout-service">&ndash;</span></div>
+      <div id="rollout-reason-box" class="reason-box" style="display:none">
+        <strong>Reason:</strong> <span id="rollout-reason"></span>
+      </div>
+      <div class="hint">
+        Trigger this scenario from a terminal:<br />
+        <code>./scripts/simulate-bad-release.sh</code> then <code>./scripts/rollback.sh</code>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Request Routing</h2>
+      <p style="color:var(--text-dim); font-size:0.85rem; margin-top:0;">
+        Sends a real request through Ingress &rarr; Service &rarr; a pod, and reports which pod actually answered.
+      </p>
+      <button id="send-request-btn">Send Request</button>
+      <div class="request-log" id="request-log"></div>
+    </section>
+
+    <section class="card wide">
+      <h2>Live Pods</h2>
+      <table>
+        <thead>
+          <tr><th>Name</th><th>Status</th><th>Node</th><th>Version</th><th>Restarts</th><th>Age</th></tr>
+        </thead>
+        <tbody id="pods-body"></tbody>
+      </table>
+    </section>
+
+  </div>
+
+  <footer>
+    Polling every 3s. Cluster state only &mdash; nothing on this page is simulated or cached beyond the poll interval.
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,60 @@
+# demo-observer pods are still subject to k8s/networkpolicy.yaml's
+# default-deny-all (podSelector: {} matches every pod in inventory-prod,
+# including this one) and already get DNS egress from that file's
+# allow-dns-egress rule. These two policies add exactly the two additional
+# egress paths the observer needs and nothing else:
+#   1. the Kubernetes API server, to read pod/deployment/HPA state
+#   2. the ingress-nginx controller, to proxy the "Send Request" demo through
+#      the same path real traffic takes
+#
+# Deliberately absent: any ingress rule for demo-observer. The dashboard is
+# reached via `kubectl port-forward` for this local demo (see
+# scripts/dashboard.sh), which talks to the kubelet directly and isn't
+# subject to pod-to-pod NetworkPolicy -- so no inbound hole needs to be
+# punched in default-deny-all just to serve the dashboard.
+---
+# The kube-apiserver's ClusterIP (`kubectl get svc kubernetes -n default`) is
+# not a pod-backed Service in kind (the API server runs as a host-networked
+# static pod), so it can't be targeted with a namespaceSelector/podSelector
+# the way the Postgres egress rule in networkpolicy.yaml is. An ipBlock
+# targeting the well-known in-cluster API address is the standard pattern for
+# this. If the cluster's service CIDR differs from kind's default
+# (10.96.0.0/12), adjust this CIDR to match.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-observer-egress-to-apiserver
+  namespace: inventory-prod
+spec:
+  podSelector:
+    matchLabels:
+      app: demo-observer
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 10.96.0.1/32
+      ports:
+        - protocol: TCP
+          port: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-observer-egress-to-ingress
+  namespace: inventory-prod
+spec:
+  podSelector:
+    matchLabels:
+      app: demo-observer
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 80

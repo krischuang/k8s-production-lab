@@ -1,0 +1,66 @@
+# Single replica: this is a demo tool, not the production workload. Losing it
+# briefly just means the dashboard is unavailable, not the API.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-observer
+  namespace: inventory-prod
+  labels:
+    app: demo-observer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: demo-observer
+  template:
+    metadata:
+      labels:
+        app: demo-observer
+    spec:
+      serviceAccountName: demo-observer
+      containers:
+        - name: demo-observer
+          image: demo-observer:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: OBSERVER_NAMESPACE
+              value: inventory-prod
+            - name: OBSERVER_APP_LABEL_SELECTOR
+              value: app=inventory-api
+            - name: OBSERVER_DEPLOYMENT_NAME
+              value: inventory-api
+            - name: OBSERVER_HPA_NAME
+              value: inventory-api
+            - name: OBSERVER_INGRESS_URL
+              value: http://ingress-nginx-controller.ingress-nginx.svc.cluster.local
+            - name: OBSERVER_INGRESS_HOST
+              value: inventory.local
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10002
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
