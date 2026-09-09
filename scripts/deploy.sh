@@ -9,12 +9,17 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CLUSTER_NAME="inventory-prod"
 NAMESPACE="inventory-prod"
 IMAGE="inventory-api:local"
+OBSERVER_IMAGE="demo-observer:local"
 
 echo "==> Building ${IMAGE}"
 docker build -f "${REPO_ROOT}/app/Dockerfile" -t "${IMAGE}" "${REPO_ROOT}"
 
-echo "==> Loading image into kind cluster '${CLUSTER_NAME}'"
+echo "==> Building ${OBSERVER_IMAGE}"
+docker build -f "${REPO_ROOT}/observer/Dockerfile" -t "${OBSERVER_IMAGE}" "${REPO_ROOT}"
+
+echo "==> Loading images into kind cluster '${CLUSTER_NAME}'"
 kind load docker-image "${IMAGE}" --name "${CLUSTER_NAME}"
+kind load docker-image "${OBSERVER_IMAGE}" --name "${CLUSTER_NAME}"
 
 echo "==> Applying namespace and config"
 kubectl apply -f "${REPO_ROOT}/k8s/namespace.yaml"
@@ -50,4 +55,11 @@ kubectl apply -f "${REPO_ROOT}/k8s/pdb.yaml"
 echo "==> Waiting for rollout"
 kubectl -n "${NAMESPACE}" rollout status deployment/inventory-api --timeout=120s
 
-echo "==> Deployed. Run scripts/verify.sh to check health."
+echo "==> Applying demo-observer (read-only dashboard backend, see README 'Kubernetes observer architecture')"
+kubectl apply -f "${REPO_ROOT}/k8s/observer-rbac.yaml"
+kubectl apply -f "${REPO_ROOT}/k8s/observer-networkpolicy.yaml"
+kubectl apply -f "${REPO_ROOT}/k8s/observer-deployment.yaml"
+kubectl apply -f "${REPO_ROOT}/k8s/observer-service.yaml"
+kubectl -n "${NAMESPACE}" rollout status deployment/demo-observer --timeout=120s
+
+echo "==> Deployed. Run scripts/verify.sh to check health, or scripts/dashboard.sh to open the live demo."

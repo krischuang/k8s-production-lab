@@ -56,5 +56,30 @@ echo
 
 kill "${PF_PID}" 2>/dev/null || true
 trap - EXIT
+
+OBSERVER_PORT=18081
 echo
-echo "==> Verification complete"
+echo "==> Port-forwarding svc/demo-observer to localhost:${OBSERVER_PORT}"
+kubectl -n "${NAMESPACE}" port-forward svc/demo-observer "${OBSERVER_PORT}:80" >/tmp/demo-observer-port-forward.log 2>&1 &
+OBS_PF_PID=$!
+trap 'kill ${OBS_PF_PID} 2>/dev/null || true' EXIT
+
+for _ in $(seq 1 10); do
+  if curl -sf "http://localhost:${OBSERVER_PORT}/healthz" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+
+echo
+echo "==> GET /api/status (demo-observer)"
+curl -sf "http://localhost:${OBSERVER_PORT}/api/status"
+echo
+echo "==> GET /api/pods (demo-observer)"
+curl -sf "http://localhost:${OBSERVER_PORT}/api/pods"
+echo
+
+kill "${OBS_PF_PID}" 2>/dev/null || true
+trap - EXIT
+echo
+echo "==> Verification complete. Run scripts/dashboard.sh to view it in a browser."
