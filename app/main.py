@@ -18,6 +18,15 @@ READINESS_DELAY_SECONDS = int(os.getenv("READINESS_DELAY_SECONDS", "5"))
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 DB_CONNECT_TIMEOUT_SECONDS = float(os.getenv("DB_CONNECT_TIMEOUT_SECONDS", "2"))
 APP_ENV = os.getenv("APP_ENV", "development")
+APP_VERSION = os.getenv("APP_VERSION", "dev")
+
+# Populated via the Downward API (see k8s/deployment.yaml) rather than the app
+# querying the Kubernetes API to discover its own identity -- the pod already
+# knows this about itself, so asking the API server for it would just be an
+# unnecessary RBAC surface.
+POD_NAME = os.getenv("POD_NAME", "unknown")
+NODE_NAME = os.getenv("NODE_NAME", "unknown")
+POD_NAMESPACE = os.getenv("POD_NAMESPACE", "unknown")
 
 ITEMS = [
     {"id": 1, "name": "widget", "quantity": 42},
@@ -72,6 +81,19 @@ async def readiness(response: Response) -> dict:
 @app.get("/api/items")
 def list_items() -> dict:
     return {"items": ITEMS, "count": len(ITEMS)}
+
+
+@app.get("/api/whoami")
+def whoami() -> dict:
+    """Identifies which pod actually handled this request. Used by the demo
+    dashboard's "Send Request" button to make Service load balancing across
+    replicas visible instead of just asserted."""
+    return {
+        "pod": POD_NAME,
+        "node": NODE_NAME,
+        "namespace": POD_NAMESPACE,
+        "version": APP_VERSION,
+    }
 
 
 @app.get("/")

@@ -24,6 +24,11 @@ spec:
     metadata:
       labels:
         app: inventory-api
+        # Mirrors configmap.yaml's APP_VERSION. Kept in sync by hand since
+        # this project intentionally uses raw manifests, not a templating
+        # engine -- lets the observer read version per-pod without an extra
+        # HTTP call to each one. See README "Live Demo" for how it's used.
+        app.kubernetes.io/version: v1.0.0
     spec:
       serviceAccountName: inventory-api
       # Spread the 3 replicas across nodes instead of allowing the scheduler
@@ -50,6 +55,23 @@ spec:
                 name: inventory-api-config
             - secretRef:
                 name: inventory-db-credentials
+          # Downward API: the pod's own identity, injected by the kubelet at
+          # start time. This is the correct way for a pod to know its own
+          # name/node/namespace -- it must never call the Kubernetes API just
+          # to ask who it is.
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
           resources:
             requests:
               cpu: 100m

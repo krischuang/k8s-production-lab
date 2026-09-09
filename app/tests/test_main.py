@@ -36,3 +36,21 @@ def test_readiness_fails_when_flagged(monkeypatch):
     monkeypatch.setattr(main_module, "FAIL_READINESS", True)
     resp = client.get("/health/ready")
     assert resp.status_code == 503
+
+
+def test_whoami_reports_downward_api_identity(monkeypatch):
+    import app.main as main_module
+
+    monkeypatch.setattr(main_module, "POD_NAME", "inventory-api-abc123")
+    monkeypatch.setattr(main_module, "NODE_NAME", "kind-worker")
+    monkeypatch.setattr(main_module, "POD_NAMESPACE", "inventory-prod")
+    monkeypatch.setattr(main_module, "APP_VERSION", "v1.0.0")
+
+    resp = client.get("/api/whoami")
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "pod": "inventory-api-abc123",
+        "node": "kind-worker",
+        "namespace": "inventory-prod",
+        "version": "v1.0.0",
+    }

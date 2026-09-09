@@ -6,6 +6,7 @@ metadata:
   namespace: inventory-prod
 data:
   APP_ENV: "production"
+  APP_VERSION: "v1.0.0"
   READINESS_DELAY_SECONDS: "5"
   DB_CONNECT_TIMEOUT_SECONDS: "2"
   FAIL_READINESS: "false"
