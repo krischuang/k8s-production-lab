@@ -21,6 +21,7 @@ Most "Kubernetes portfolio" repos stop at `kubectl apply -f deployment.yaml`. Th
 ```mermaid
 flowchart TB
     Client([Client])
+    Browser([Browser: dashboard])
 
     subgraph Cluster["kind cluster: inventory-prod"]
         subgraph IngressNS["namespace: ingress-nginx"]
@@ -46,8 +47,14 @@ flowchart TB
             HPA{{HorizontalPodAutoscaler\nmin 3 / max 10 / cpu 60%}}
             PDB{{PodDisruptionBudget\nminAvailable 2}}
             NetPol[/NetworkPolicy\ndefault-deny + allow rules/]
+
+            Obs[demo-observer\nread-only dashboard backend]
+            ObsSA[ServiceAccount\ndemo-observer]
+            ObsRole[Role + RoleBinding\nget/list/watch only]
         end
     end
+
+    ApiServer[(kube-apiserver)]
 
     Client -->|HTTP host: inventory.local| Ingress
     Ingress -->|allowed by NetworkPolicy| Svc
@@ -66,18 +73,85 @@ flowchart TB
     HPA -.watches CPU, scales.-> Pods
     PDB -.protects during drain/rollout.-> Pods
     NetPol -.enforces.-> Pods
+
+    Browser -->|kubectl port-forward, no k8s credentials| Obs
+    Obs -->|read-only, get/list/watch| ApiServer
+    Obs -->|proxies "Send Request" via| Ingress
+    ObsSA -.identity.-> Obs
+    ObsRole -.binds.-> ObsSA
 ```
 
 Request flow: a client hits `inventory.local` → the ingress-nginx controller (the only thing NetworkPolicy allows to reach the API pods) → the `inventory-api` ClusterIP Service → whichever pods currently pass their readiness probe. Each pod reads its config from a ConfigMap, its credentials from a Secret, and checks Postgres connectivity as part of readiness. The HPA and PDB both watch the same pod set from different angles: one adds/removes replicas based on CPU, the other refuses to let voluntary disruptions (drain, rollout) drop available replicas below 2.
+
+The dashboard sits alongside this, not in the request path: a browser talks only to `demo-observer` (no Kubernetes credentials ever reach the browser), which holds its own narrow, read-only ServiceAccount separate from inventory-api's. See "Kubernetes observer architecture" below for the full reasoning.
+
+## Live Demo Dashboard
+
+Everything above is real whether or not anyone's watching it happen. The dashboard exists so it doesn't have to be narrated from `kubectl` output during an interview — the same cluster state, updating in the browser every 3 seconds.
+
+```
+./scripts/dashboard.sh      # port-forwards demo-observer and opens http://localhost:8090/
+```
+
+Five cards, each backed by a real read from the cluster (no client-side simulation, nothing faked):
+
+- **Application Health** — version, ready/desired replica counts, updated/available counts
+- **Autoscaling (HPA)** — current/desired/min/max replicas, target CPU%, current CPU% (blank until metrics-server has a sample)
+- **Deployment Status** — rollout state, healthy-old vs ready-new replica counts, and *why* a new pod isn't ready when it isn't (see below)
+- **Request Routing** — a "Send Request" button that sends one real request through Ingress → Service → a pod and reports which pod answered, building a short history so repeated clicks visibly land on different pods
+- **Live Pods** — name, ready/not-ready, node, version, restart count, age; newly-created pods flash green, pods Kubernetes removes flash red and linger briefly before disappearing, so scaling and rollouts are visually obvious instead of just a number changing
+
+The dashboard has no mutation controls anywhere in it — no deploy button, no rollback button, no scale button. That's deliberate; see the next section.
+
+## Kubernetes observer architecture
+
+The dashboard is served by a second, separate component — **demo-observer** — not by inventory-api itself. This matters for a specific reason: inventory-api's ServiceAccount (`k8s/rbac.yaml`) is scoped to reading its own ConfigMap/Secret, and building a dashboard that needs to read pod/Deployment/HPA state should never be the excuse to widen that. So the dashboard's Kubernetes API access lives entirely in a new, narrower, unrelated identity:
+
+```
+browser  --(HTTP, no Kubernetes credentials)-->  demo-observer  --(ServiceAccount token, read-only)-->  kube-apiserver
+```
+
+**The browser never holds a Kubernetes credential of any kind.** It only ever talks to `demo-observer` over plain HTTP, and `demo-observer` is the one component with an actual ServiceAccount token mounted. `observer/k8s_client.py` reads that token from the standard projected-volume path (`/var/run/secrets/kubernetes.io/serviceaccount/token`) and makes plain REST calls to the API server — no official Kubernetes SDK, specifically so "what can this component actually do" is answerable by reading four short functions instead of trusting a generated client.
+
+`demo-observer`'s RBAC (`k8s/observer-rbac.yaml`), in full:
+
+```yaml
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch"]
+```
+
+Read-only, four resource kinds, one namespace (`inventory-prod`, via a `Role`+`RoleBinding`, never a `ClusterRole`). No `cluster-admin`, no wildcard verbs, no wildcard resources, no write verbs anywhere. It genuinely cannot deploy, scale, patch, delete, or exec into anything — only `get`/`list`/`watch`.
+
+**Mutations are deliberately kept out of the dashboard entirely.** Triggering a bad rollout, rolling back, starting load, draining a node — all of that stays in the existing scripts (`simulate-bad-release.sh`, `rollback.sh`, `load-test.sh`, `drain-node.sh`), run from a terminal. The dashboard only ever observes and reflects the result. This is a design choice, not a missing feature: giving a browser-facing component write access to Deployments (even gated behind a "Rollback" button) would mean the demo tool itself becomes something worth attacking, and the whole point of this repo is to demonstrate least-privilege design, not undermine it for a nicer demo. Where the spec called for HPA/rollout control from the browser, the dashboard instead shows the exact terminal command next to the relevant card.
+
+Two more pieces of the security boundary worth being explicit about:
+
+- **No inbound hole in NetworkPolicy for the dashboard.** `demo-observer` is reached locally via `kubectl port-forward` (`scripts/dashboard.sh`), which talks to the kubelet directly rather than traversing the pod network — so no ingress rule had to be added to `k8s/observer-networkpolicy.yaml` just to serve a browser. The observer's own *egress* is still constrained by `k8s/networkpolicy.yaml`'s `default-deny-all` (it's a pod in `inventory-prod`, so that policy applies to it too) plus two narrow additions: to the Kubernetes API server (to read state) and to the ingress-nginx controller (to proxy the "Send Request" feature through the real traffic path, not directly to a pod).
+- **The apiserver egress rule is generated at deploy time, not committed as static YAML** — and the reason is worth stating plainly rather than glossing over: the textbook approach (an `ipBlock` on the `kubernetes` Service's ClusterIP, `10.96.0.1/32`) was tried first and **did not work**, verified by testing pod-to-apiserver connectivity directly. On this cluster, Calico enforces egress against the API server's *post-DNAT* destination (the control-plane node's real IP:6443), not the ClusterIP the pod actually dials — so a static ClusterIP `ipBlock` silently matches nothing and every API call times out. `scripts/deploy.sh` resolves the real address from `kubectl get endpoints kubernetes -n default` and generates the policy from that at deploy time instead. Still least-privilege (one IP, one port, nothing else), just not a value that stays correct if written down once. See the comment block in `k8s/observer-networkpolicy.yaml` for the full explanation.
 
 ## Repository structure
 
 ```
 k8s-production-lab/
 ├── app/                    # FastAPI service
-│   ├── main.py              # /health/live, /health/ready, /api/items
+│   ├── main.py              # /health/live, /health/ready, /api/items, /api/whoami
 │   ├── requirements.txt
 │   ├── requirements-dev.txt
+│   ├── tests/
+│   └── Dockerfile
+├── observer/                # demo-observer: read-only backend for the live dashboard
+│   ├── main.py               # aggregates pod/deployment/HPA state into a small JSON API
+│   ├── k8s_client.py         # minimal Kubernetes REST client (SA token, no SDK)
+│   ├── static/                # dashboard frontend (vanilla HTML/CSS/JS, no build step)
+│   ├── requirements.txt
 │   ├── tests/
 │   └── Dockerfile
 ├── infra/
@@ -94,17 +168,26 @@ k8s-production-lab/
 │   ├── ingress.yaml
 │   ├── hpa.yaml
 │   ├── pdb.yaml
-│   └── networkpolicy.yaml
+│   ├── networkpolicy.yaml
+│   ├── observer-rbac.yaml           # demo-observer ServiceAccount/Role/RoleBinding
+│   ├── observer-networkpolicy.yaml  # demo-observer's egress rules
+│   ├── observer-deployment.yaml
+│   └── observer-service.yaml
 ├── scripts/
 │   ├── setup-cluster.sh      # create kind cluster + Calico + ingress-nginx + metrics-server
-│   ├── deploy.sh             # build image, load into kind, apply manifests
+│   ├── deploy.sh             # build images, load into kind, apply manifests
 │   ├── verify.sh             # check cluster state, curl health endpoints
+│   ├── dashboard.sh          # port-forward + open the live demo dashboard
 │   ├── load-test.sh          # generate load through the Ingress for HPA demo
+│   ├── start-load.sh         # thin wrapper over load-test.sh
+│   ├── stop-load.sh          # stop a load test early
 │   ├── simulate-bad-release.sh  # roll out a broken readiness probe
 │   ├── rollback.sh           # kubectl rollout undo + verify
 │   ├── drain-node.sh         # cordon/drain a worker, observe PDB behavior
+│   ├── demo.sh               # interview prep: checks prerequisites, prints a runbook
 │   └── teardown.sh           # delete the kind cluster
 ├── .github/workflows/ci.yml
+├── DEMO.md                  # 5-minute interview walkthrough
 ├── LICENSE
 └── README.md
 ```
@@ -177,6 +260,15 @@ $ curl -H "Host: inventory.local" http://localhost:8080/api/items
 ```
 
 `scripts/load-test.sh` deliberately drives load through this path rather than `kubectl port-forward svc/inventory-api` — a port-forward to a Service pins the whole connection to one arbitrarily-chosen pod, which would concentrate all the CPU load on a single replica and never trigger a realistic scale-out. Going through nginx means load spreads across every pod the way real traffic would, and it exercises the same NetworkPolicy path a real client uses.
+
+The same path is what the dashboard's "Send Request" button uses to demonstrate load balancing. `GET /api/whoami` reports which pod answered:
+
+```
+$ curl -H "Host: inventory.local" http://localhost:8080/api/whoami
+{"pod":"inventory-api-cdd7c9f48-mb9cw","node":"inventory-prod-worker2","namespace":"inventory-prod","version":"v1.0.0"}
+```
+
+`pod`, `node`, and `namespace` come from the Downward API (`k8s/deployment.yaml`'s `env` block uses `fieldRef` against `metadata.name`, `spec.nodeName`, and `metadata.namespace`) — the kubelet injects these as plain environment variables at container start. This is the correct way for a pod to know its own identity; the alternative (the app querying the Kubernetes API to ask "who am I") would mean giving inventory-api's ServiceAccount read access to its own Pod object for information it already has locally, for no benefit.
 
 ## Readiness vs liveness
 
@@ -447,15 +539,50 @@ This is a local demo, and the differences from a real production deployment are 
 - **Single cluster, single "AZ."** kind runs everything as Docker containers on one machine — there's no real multi-node failure domain, no cross-zone anything. Node drain and PDB behavior generalize; physical fault-tolerance claims wouldn't.
 - **No admission control / policy enforcement beyond NetworkPolicy.** No OPA/Gatekeeper, no Kyverno, no `PodSecurity` admission configured at the namespace level (the Deployment's own `securityContext` is hardened, but nothing *enforces* that other workloads in the namespace do the same).
 - **HPA is CPU-only.** No custom or external metrics (queue depth, request latency), which is what most real-world autoscaling eventually needs once CPU stops being a good proxy for load.
+- **The dashboard has no auth of its own.** `demo-observer`'s HTTP endpoints aren't authenticated — anyone who can reach the port-forward can read cluster state (never write; see "Kubernetes observer architecture" above). Fine for a local demo reached via `kubectl port-forward`; not something to expose beyond that without adding auth in front of it.
+- **The apiserver egress NetworkPolicy is environment-specific by necessity.** It's generated from the live cluster's real endpoint at deploy time rather than committed as a fixed value, because the fixed value (the documented "textbook" approach) turned out not to work against this specific Calico/kind/iptables combination. Worth knowing if adapting this to a different cluster: check whether the ClusterIP `ipBlock` approach works there before assuming either version is "the" right answer.
 
 None of this is presented as production-ready — it's a deliberately-scoped demonstration of the mechanisms, run against a real cluster with real output, rather than a claim that this exact configuration is what should run in front of real traffic.
+
+## Live Demo
+
+A practical run-through, in order, using a live browser and terminal side by side:
+
+1. **Start the kind cluster** — `./scripts/setup-cluster.sh`
+2. **Deploy the stack** — `./scripts/deploy.sh` (builds and loads both images, applies every manifest, waits for both Deployments to roll out)
+3. **Open the dashboard** — `./scripts/dashboard.sh`, or open `http://localhost:8090/` once it's port-forwarding. All five cards should read real state within a few seconds: HEALTHY, 3 Ready / 3 Desired, HPA at 3/3.
+4. **Demonstrate request routing** — click "Send Request" a handful of times in the Request Routing card. The pod name in the history should visibly rotate across the 3 replicas.
+5. **Run the HPA load test** — `./scripts/load-test.sh 240 60` in a terminal.
+6. **Watch replicas change** — back in the browser, the Autoscaling card's CPU% climbs, then Current/Desired replicas increase (3 → 5 → 7 → …) as the HPA reacts; the Live Pods table grows with new rows flashing green. When the load test ends, watch it scale back down toward 3 over the next several minutes — call out that the slow scale-down is the `behavior.scaleDown` stabilization window working as configured, not lag.
+7. **Simulate a failed release** — `./scripts/simulate-bad-release.sh` in the terminal.
+8. **Observe readiness failure** — the Deployment Status card flips to "Rollout in progress," shows 1 new replica with 0 ready, and surfaces "Reason: Readiness probe failing." Point out that Service stays "Still Available" throughout — the broken pod never receives traffic.
+9. **Roll back** — `./scripts/rollback.sh`.
+10. **Verify recovery** — the dashboard settles back to "Stable," 3/3 ready, health HEALTHY, within the rollout's timeout window — without a page reload at any point in the previous ten steps.
+
+For a tighter, timed version of this same flow, see [`DEMO.md`](DEMO.md).
+
+## What this demo proves
+
+Clicking through the dashboard isn't the point by itself — every number on it is a live read from the same mechanisms documented in detail earlier in this README:
+
+- **Service routing** — "Send Request" rotating across pod names is kube-proxy/nginx load balancing, observed, not asserted.
+- **Pod replication** — the Live Pods table is the Deployment's actual pod set, growing and shrinking with real scheduling events.
+- **Readiness** — the Deployment Status card's "ready new replicas" count and "Readiness probe failing" reason come directly from probe results and pod conditions, not a simulated state machine.
+- **Rolling updates** — watching `healthy_old_replicas` hold steady while `new_replicas` struggles is `maxUnavailable: 0` visibly doing its job.
+- **HPA** — the replica count climbing and falling on the dashboard is the same number `kubectl get hpa` reports, at the same time.
+- **PDB** — not directly visualized, but provable by running `scripts/drain-node.sh` alongside the dashboard: replica count never drops enough to be blocked by `minAvailable: 2`.
+- **Scheduling** — the Live Pods table's Node column shows real spread (or real concentration onto one node, if a worker is cordoned) from `topologySpreadConstraints`.
+- **NetworkPolicy** — the fact that the dashboard can reach the API server and ingress-nginx at all, while nothing else was granted that access, is `k8s/observer-networkpolicy.yaml`'s default-deny-plus-allowlist model working correctly.
+- **RBAC** — `demo-observer`'s Role is the only reason the dashboard has any Kubernetes API access whatsoever, and that access is read-only and namespace-scoped; see "Kubernetes observer architecture" above.
+- **Failure recovery** — steps 7-10 above are an actual incident-and-recovery cycle, timed and observable, not a slide.
 
 ## Running it yourself
 
 ```
 ./scripts/setup-cluster.sh          # kind cluster + Calico + ingress-nginx + metrics-server
-./scripts/deploy.sh                 # build image, load into kind, apply manifests
+./scripts/deploy.sh                 # build images, load into kind, apply manifests
 ./scripts/verify.sh                 # check pods/svc/hpa/pdb, curl health endpoints
+./scripts/dashboard.sh              # port-forward + open the live demo dashboard
 
 ./scripts/simulate-bad-release.sh   # trigger + diagnose a bad rollout
 ./scripts/rollback.sh               # recover
@@ -463,7 +590,9 @@ None of this is presented as production-ready — it's a deliberately-scoped dem
 ./scripts/drain-node.sh             # cordon/drain a worker, observe PDB behavior
 
 ./scripts/load-test.sh 240 60       # generate load, watch HPA scale out and back down
+# or: ./scripts/start-load.sh 240 60   /   ./scripts/stop-load.sh
 
+./scripts/demo.sh                   # interview prep: checks prerequisites, prints a runbook
 ./scripts/teardown.sh               # delete the kind cluster
 ```
 
