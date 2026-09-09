@@ -1,0 +1,31 @@
+# 1 control-plane + 2 workers so topologySpreadConstraints, node drain, and
+# PodDisruptionBudget behavior are all actually observable -- a single-node
+# cluster can't demonstrate any of them meaningfully.
+#
+# disableDefaultCNI + podSubnet: kind's default CNI (kindnet) does not
+# enforce NetworkPolicy at all -- every NetworkPolicy in k8s/networkpolicy.yaml
+# would apply silently and do nothing. Calico is installed instead by
+# scripts/setup-cluster.sh so default-deny is actually enforced.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: inventory-prod
+networking:
+  disableDefaultCNI: true
+  podSubnet: "192.168.0.0/16"
+nodes:
+  - role: control-plane
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"
+    extraPortMappings:
+      - containerPort: 80
+        hostPort: 8080
+        protocol: TCP
+      - containerPort: 443
+        hostPort: 8443
+        protocol: TCP
+  - role: worker
+  - role: worker

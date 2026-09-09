@@ -1,0 +1,53 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: application tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r app/requirements-dev.txt
+      - run: python -m pytest app/tests -v
+
+  validate-manifests:
+    name: validate kubernetes manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: yamllint
+        run: |
+          pip install yamllint
+          yamllint -d "{extends: default, rules: {line-length: disable, document-start: disable, truthy: {allowed-values: ['true','false']}}}" k8s/ infra/
+
+      - name: install kubeconform
+        run: |
+          curl -sSL https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz | tar xz
+          sudo mv kubeconform /usr/local/bin/
+
+      - name: kubeconform schema validation
+        run: |
+          kubeconform -strict -summary \
+            -ignore-filename-pattern 'secret\.example\.yaml' \
+            k8s/*.yaml
+          # kubeconform checks every manifest against the upstream Kubernetes
+          # OpenAPI schemas without needing a live cluster. A real
+          # kubectl --dry-run=server pass happens as part of scripts/deploy.sh
+          # against the local kind cluster (see README "CI").
+
+  build:
+    name: build docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: build image
+        run: docker build -f app/Dockerfile -t inventory-api:ci .
