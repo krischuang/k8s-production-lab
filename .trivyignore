@@ -1,0 +1,22 @@
+# Reviewed trivy config-scan findings, accepted rather than fixed.
+# Full reasoning in docs/owasp-security-review.md. Do not add an entry here
+# without a review note in that document -- this file suppresses real scan
+# output, so every line needs a reason someone else can check.
+
+# KSV-01010: flags k8s/configmap.yaml's POSTGRES_PORT key as "sensitive
+# content" on a generic keyword heuristic. The value is the literal port
+# number 5432, not a credential -- POSTGRES_USER/POSTGRES_PASSWORD already
+# live in k8s/secret.example.yaml (a real Secret object), not this ConfigMap.
+# See docs/owasp-security-review.md "API2:2023 - Broken Authentication" /
+# secrets handling section.
+AVD-KSV-01010
+
+# KSV-0113: flags k8s/rbac.yaml's inventory-api-config-reader Role for having
+# any get/watch access to the "secrets" resource type, regardless of scope.
+# This Role is restricted via resourceNames to exactly one named Secret
+# (inventory-db-credentials) in one namespace -- the resourceNames scoping
+# IS the mitigation this rule exists to encourage, not a gap. See
+# docs/threat-model.md "Existing Security Controls" and
+# docs/owasp-security-review.md "API5:2023 - Broken Function Level
+# Authorization".
+AVD-KSV-0113

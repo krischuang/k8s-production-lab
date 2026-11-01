@@ -64,3 +64,57 @@ jobs:
         run: docker build -f app/Dockerfile -t inventory-api:ci .
       - name: build demo-observer image
         run: docker build -f observer/Dockerfile -t demo-observer:ci .
+
+  security-tests:
+    name: automated negative security tests (static, no cluster)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r tests/requirements-dev.txt
+      - name: run static RBAC/NetworkPolicy security tests
+        run: python -m pytest tests/security -m "not integration" -v
+        # Live tests (test_rbac_live.py, test_networkpolicy_live.py) require
+        # a real kind cluster and are intentionally not run in CI -- same
+        # reasoning as validate-manifests already documents for
+        # kubectl --dry-run=server. Run them locally after
+        # scripts/setup-cluster.sh + scripts/deploy.sh.
+
+  security-scan:
+    name: IaC and dependency security scanning
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: trivy config scan (k8s manifests + Dockerfiles)
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          scan-type: config
+          scan-ref: .
+          severity: MEDIUM,HIGH,CRITICAL
+          exit-code: 1
+          trivyignores: .trivyignore
+
+      - name: trivy dependency scan (app)
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: app/requirements.txt
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          exit-code: 1
+
+      - name: trivy dependency scan (observer)
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: observer/requirements.txt
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          exit-code: 1
+        # Image-layer scanning (the built inventory-api:ci / demo-observer:ci
+        # images from the `build` job above) is a documented follow-up, not
+        # done here -- see docs/owasp-security-review.md "Supply chain /
+        # image provenance".

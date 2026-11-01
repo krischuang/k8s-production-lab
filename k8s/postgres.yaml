@@ -22,9 +22,33 @@ spec:
       labels:
         app: postgres
     spec:
+      # fsGroup makes the emptyDir volume group-writable by UID 999 (the
+      # official postgres:16-alpine image's built-in "postgres" user) so the
+      # container can run as non-root from the start instead of relying on
+      # the image's own entrypoint to chown the data directory as root first.
+      securityContext:
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: postgres
           image: postgres:16-alpine
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 999
+            runAsGroup: 999
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          # readOnlyRootFilesystem is deliberately NOT set here. The
+          # official postgres image writes to /var/run/postgresql (unix
+          # socket) and /tmp in addition to the already-separate /var/lib/
+          # postgresql/data volume; doing this correctly needs extra
+          # emptyDir mounts for those paths plus verification against a
+          # live cluster (no cluster was available when this fix was
+          # written -- see docs/threat-model.md T13 residual risk).
+          # Claiming readOnlyRootFilesystem here without that verification
+          # would be an unverified security claim.
           ports:
             - containerPort: 5432
               name: postgres
