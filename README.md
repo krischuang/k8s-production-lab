@@ -186,7 +186,20 @@ k8s-production-lab/
 │   ├── drain-node.sh         # cordon/drain a worker, observe PDB behavior
 │   ├── demo.sh               # interview prep: checks prerequisites, prints a runbook
 │   └── teardown.sh           # delete the kind cluster
+├── tests/
+│   ├── requirements-dev.txt
+│   └── security/             # RBAC/NetworkPolicy security tests -- see "Security" above
+│       ├── conftest.py        # cluster-detection helper; live tests skip without a matching cluster
+│       ├── test_rbac_static.py        # no cluster required, runs in CI
+│       ├── test_networkpolicy_static.py  # no cluster required, runs in CI
+│       ├── test_rbac_live.py          # requires a live cluster, not run in CI
+│       └── test_networkpolicy_live.py # requires a live cluster, not run in CI
+├── docs/
+│   ├── threat-model.md       # STRIDE analysis, risk ratings, residual risks
+│   └── owasp-security-review.md  # OWASP API Security Top 10 + K8s-specific risks
 ├── .github/workflows/ci.yml
+├── .trivyignore              # justified exceptions to the security-scan job
+├── pytest.ini
 ├── DEMO.md                  # 5-minute interview walkthrough
 ├── LICENSE
 └── README.md
@@ -519,27 +532,72 @@ kubectl get endpoints <service> -n inventory-prod     # ground truth for "what's
 
 ## CI
 
-`.github/workflows/ci.yml` runs three independent jobs on every push/PR:
+`.github/workflows/ci.yml` runs six independent jobs on every push/PR:
 
 - **test** — installs `app/requirements-dev.txt`, runs `pytest app/tests`
+- **test-observer** — installs `observer/requirements-dev.txt`, runs `pytest observer/tests`
 - **validate-manifests** — `yamllint` on `k8s/` and `infra/`, then [`kubeconform`](https://github.com/yannh/kubeconform) `-strict` schema validation against every manifest in `k8s/` (excluding the Secret template, which has no schema-relevant content to validate beyond what kubeconform already checks)
-- **build** — `docker build` on `app/Dockerfile`, confirming the image actually builds
+- **build** — `docker build` on `app/Dockerfile` and `observer/Dockerfile`, confirming both images actually build
+- **security-tests** — installs `tests/requirements-dev.txt`, runs the static half of `tests/security/` (`pytest tests/security -m "not integration"`): RBAC and NetworkPolicy manifests parsed and asserted against directly, no cluster required
+- **security-scan** — [`trivy`](https://github.com/aquasecurity/trivy) `config` scan against every `k8s/*.yaml` and both Dockerfiles, plus `trivy fs` dependency-vulnerability scans of `app/requirements.txt` and `observer/requirements.txt`; fails the build on any MEDIUM+ finding not explicitly justified in `.trivyignore`
 
-Deliberately excluded: a `kubectl --dry-run=server` pass, which needs a live API server and would mean spinning up a cluster in CI just to validate YAML that `kubeconform` already covers structurally. The real server-side validation happens locally via `scripts/deploy.sh` against kind, which is closer to how this project is meant to be exercised anyway.
+Deliberately excluded from CI: a `kubectl --dry-run=server` pass (needs a live API server — would mean spinning up a cluster in CI just to validate YAML `kubeconform` already covers structurally), and the *live* half of `tests/security/` (`test_rbac_live.py`, `test_networkpolicy_live.py` — these exercise real RBAC/NetworkPolicy enforcement against a running cluster and are meant to be run locally after `scripts/setup-cluster.sh` + `scripts/deploy.sh`, same reasoning as the dry-run exclusion). Trivy image-layer scanning of the *built* containers (as opposed to the Dockerfile/dependency-list scans above) is a documented follow-up, not yet wired in — see `docs/owasp-security-review.md`.
+
+## Security
+
+This project has a written threat model and OWASP API Security review, not just the controls described inline above:
+
+- **[`docs/threat-model.md`](docs/threat-model.md)** — STRIDE analysis, 13 threat scenarios, likelihood/impact/risk ratings, residual risks, prioritized mitigations. Every control cited has a file path; every gap is marked as a real, open gap or `CANNOT VERIFY` rather than assumed safe.
+- **[`docs/owasp-security-review.md`](docs/owasp-security-review.md)** — OWASP API Security Top 10 (2023) plus Kubernetes-specific risks (RBAC, network segmentation, pod hardening, secrets, supply chain, admission control, observability), each checked against actual code and manifests, with N/A items explained rather than skipped.
+
+**Test commands and expected results** (run from the repo root):
+
+```
+# Static security tests -- no cluster required, run in CI
+source .venv/bin/activate   # or: pip install -r tests/requirements-dev.txt
+python -m pytest tests/security -m "not integration" -v
+# Expected: 19 passed
+
+# Live security tests -- require a running cluster (scripts/setup-cluster.sh + scripts/deploy.sh)
+python -m pytest tests/security -v
+# Expected without a cluster: 19 passed, 17 skipped (reason: no reachable
+# cluster with namespace 'inventory-prod')
+# Expected with a cluster deployed: 36 passed
+
+# IaC security scan (requires trivy: brew install trivy)
+trivy config k8s/ --severity MEDIUM,HIGH,CRITICAL
+# Expected: 0 failures (two findings are reviewed and suppressed via
+# .trivyignore -- see docs/owasp-security-review.md "Security Scanning
+# Results" for which ones and why; postgres.yaml's readOnlyRootFilesystem
+# finding is intentionally left visible, not suppressed -- see
+# docs/threat-model.md T13)
+```
+
+**UTS 43030 A3 Goal 2 (Cybersecurity) evidence mapping:**
+
+| A1 Goal 2 activity | Evidence in this repo |
+|---|---|
+| OWASP Application/API Security Review | `docs/owasp-security-review.md` |
+| Structured Threat Modelling | `docs/threat-model.md` |
+| Authentication / Authorisation / Access Control | `k8s/rbac.yaml`, `k8s/observer-rbac.yaml`, `k8s/networkpolicy.yaml`, `k8s/observer-networkpolicy.yaml` |
+| Secrets Management and Data Protection | `k8s/secret.example.yaml`, `.gitignore`; reviewed in `docs/owasp-security-review.md` |
+| CI/CD Security Checks | `.github/workflows/ci.yml` `security-scan` job; `.trivyignore` |
+| Testing and Professional Reflection | `tests/security/`; `docs/threat-model.md` §4 Threat Scenarios; this section's "Known Limitations" |
 
 ## Production limitations and trade-offs
 
 This is a local demo, and the differences from a real production deployment are worth being explicit about rather than glossing over:
 
 - **Postgres has no persistence or HA.** `k8s/postgres.yaml` uses `emptyDir` and a single replica — data is lost if the pod is rescheduled. A real deployment would use a managed database (RDS, Cloud SQL) or at minimum a StatefulSet with a real `PersistentVolumeClaim` and a storage class with actual replication.
-- **No TLS.** The Ingress serves plain HTTP; there's no cert-manager or TLS termination configured. A real Ingress would terminate TLS with certificates from a real CA.
-- **Image is local-only.** `inventory-api:local` is built and loaded directly into kind nodes (`kind load docker-image`); there's no registry, no image signing, no vulnerability scanning gate.
+- **No TLS.** The Ingress serves plain HTTP; there's no cert-manager or TLS termination configured. A real Ingress would terminate TLS with certificates from a real CA. Tracked as threat model T5 (`docs/threat-model.md`) — the single largest open residual risk in this repo.
+- **`postgres` container's `readOnlyRootFilesystem` is not set.** Every other `securityContext` hardening field is (`runAsNonRoot`, `allowPrivilegeEscalation: false`, capabilities dropped, `seccompProfile`) — confirmed by `trivy config k8s/postgres.yaml` reporting zero other findings. This one field is left open and documented rather than guessed at, because enabling it correctly needs extra `emptyDir` mounts plus verification against a live cluster that wasn't available when this was reviewed. Tracked as threat model T13.
+- **Image is local-only.** `inventory-api:local` is built and loaded directly into kind nodes (`kind load docker-image`); there's no registry, no image signing. Dockerfile config and dependency-list vulnerability scanning run in CI (`security-scan` job); scanning of the *built* image's layers does not yet.
 - **No observability stack.** No Prometheus/Grafana, no centralized logging, no tracing. The only signal available is what `kubectl` surfaces directly, which is enough for this project's scope but not for running something in anger.
 - **RBAC Role is illustrative, not load-bearing.** The app doesn't call the Kubernetes API today; the Role exists to demonstrate the least-privilege pattern before it's actually needed, not because it's required for current functionality.
 - **Single cluster, single "AZ."** kind runs everything as Docker containers on one machine — there's no real multi-node failure domain, no cross-zone anything. Node drain and PDB behavior generalize; physical fault-tolerance claims wouldn't.
-- **No admission control / policy enforcement beyond NetworkPolicy.** No OPA/Gatekeeper, no Kyverno, no `PodSecurity` admission configured at the namespace level (the Deployment's own `securityContext` is hardened, but nothing *enforces* that other workloads in the namespace do the same).
+- **No admission control / policy enforcement beyond NetworkPolicy.** No OPA/Gatekeeper, no Kyverno, no `PodSecurity` admission configured at the namespace level (every Deployment's own `securityContext` is hardened, but nothing *enforces* that a future workload in the namespace does the same). Tracked as threat model T2.
 - **HPA is CPU-only.** No custom or external metrics (queue depth, request latency), which is what most real-world autoscaling eventually needs once CPU stops being a good proxy for load.
-- **The dashboard has no auth of its own.** `demo-observer`'s HTTP endpoints aren't authenticated — anyone who can reach the port-forward can read cluster state (never write; see "Kubernetes observer architecture" above). Fine for a local demo reached via `kubectl port-forward`; not something to expose beyond that without adding auth in front of it.
+- **The dashboard has no auth of its own.** `demo-observer`'s HTTP endpoints aren't authenticated — anyone who can reach the port-forward can read cluster state (never write; see "Kubernetes observer architecture" above). Fine for a local demo reached via `kubectl port-forward`; not something to expose beyond that without adding auth in front of it. Tracked as threat model T8 and OWASP review API2.
 - **The apiserver egress NetworkPolicy is environment-specific by necessity.** It's generated from the live cluster's real endpoint at deploy time rather than committed as a fixed value, because the fixed value (the documented "textbook" approach) turned out not to work against this specific Calico/kind/iptables combination. Worth knowing if adapting this to a different cluster: check whether the ClusterIP `ipBlock` approach works there before assuming either version is "the" right answer.
 
 None of this is presented as production-ready — it's a deliberately-scoped demonstration of the mechanisms, run against a real cluster with real output, rather than a claim that this exact configuration is what should run in front of real traffic.
