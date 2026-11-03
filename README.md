@@ -549,6 +549,7 @@ This project has a written threat model and OWASP API Security review, not just 
 
 - **[`docs/threat-model.md`](docs/threat-model.md)** — STRIDE analysis, 13 threat scenarios, likelihood/impact/risk ratings, residual risks, prioritized mitigations. Every control cited has a file path; every gap is marked as a real, open gap or `CANNOT VERIFY` rather than assumed safe.
 - **[`docs/owasp-security-review.md`](docs/owasp-security-review.md)** — OWASP API Security Top 10 (2023) plus Kubernetes-specific risks (RBAC, network segmentation, pod hardening, secrets, supply chain, admission control, observability), each checked against actual code and manifests, with N/A items explained rather than skipped.
+- **[`docs/live-security-verification-2026-11-03.md`](docs/live-security-verification-2026-11-03.md)** — the 17 live RBAC/NetworkPolicy tests actually executed against a dedicated kind cluster (not just described as runnable): environment versions, full pass/fail output, and teardown confirmation.
 
 **Test commands and expected results** (run from the repo root):
 
