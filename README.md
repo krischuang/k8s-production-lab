@@ -576,7 +576,7 @@ trivy config k8s/ --severity MEDIUM,HIGH,CRITICAL
 
 **UTS 43030 A3 Goal 2 (Cybersecurity) evidence mapping:**
 
-| A1 Goal 2 activity | Evidence in this repo |
+| A3 Goal 2 activity | Evidence in this repo |
 |---|---|
 | OWASP Application/API Security Review | `docs/owasp-security-review.md` |
 | Structured Threat Modelling | `docs/threat-model.md` |
