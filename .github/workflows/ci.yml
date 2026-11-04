@@ -85,35 +85,66 @@ jobs:
   security-scan:
     name: IaC and dependency security scanning
     runs-on: ubuntu-latest
+    env:
+      # aquasecurity/trivy-action's bundled installer unconditionally
+      # downloads the trivy binary from get.trivy.dev, which has an
+      # unrelated DNS outage as of 2026-11-04 (NXDOMAIN, independent of
+      # GitHub). Run trivy via its official container image instead --
+      # pulled from ghcr.io, same place the action fetches its vulnerability
+      # DB from -- so the scan doesn't depend on that domain at all.
+      TRIVY_IMAGE: ghcr.io/aquasecurity/trivy@sha256:be1190afcb28352bfddc4ddeb71470835d16462af68d310f9f4bca710961a41e # 0.70.0
+      # trivy-action cached the vulnerability DB across runs (key:
+      # cache-trivy-<date>, default cache-dir under $GITHUB_WORKSPACE).
+      # Reproduce that here so dependency scans don't re-download the ~130MB
+      # DB on every run, and so all 3 steps in this job share one download.
+      TRIVY_CACHE_DIR: ${{ github.workspace }}/.trivy-cache
     steps:
       - uses: actions/checkout@v4
 
-      - name: trivy config scan (k8s manifests + Dockerfiles)
-        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+      - name: get current date (for trivy DB cache key)
+        id: date
+        run: echo "date=$(date +'%Y-%m-%d')" >> "$GITHUB_OUTPUT"
+
+      - name: restore trivy vulnerability DB cache
+        uses: actions/cache@v4
         with:
-          scan-type: config
-          scan-ref: .
-          severity: MEDIUM,HIGH,CRITICAL
-          exit-code: 1
-          trivyignores: .trivyignore
+          path: ${{ env.TRIVY_CACHE_DIR }}
+          key: cache-trivy-${{ steps.date.outputs.date }}
+          restore-keys: cache-trivy-
+
+      - name: trivy config scan (k8s manifests + Dockerfiles)
+        run: |
+          mkdir -p "$TRIVY_CACHE_DIR"
+          docker run --rm \
+            -v "$PWD:/work" -w /work \
+            -v "$TRIVY_CACHE_DIR:/root/.cache/trivy" \
+            "$TRIVY_IMAGE" \
+            config . \
+            --severity MEDIUM,HIGH,CRITICAL \
+            --exit-code 1 \
+            --ignorefile .trivyignore
 
       - name: trivy dependency scan (app)
-        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
-        with:
-          scan-type: fs
-          scan-ref: app/requirements.txt
-          scanners: vuln
-          severity: HIGH,CRITICAL
-          exit-code: 1
+        run: |
+          docker run --rm \
+            -v "$PWD:/work" -w /work \
+            -v "$TRIVY_CACHE_DIR:/root/.cache/trivy" \
+            "$TRIVY_IMAGE" \
+            fs app/requirements.txt \
+            --scanners vuln \
+            --severity HIGH,CRITICAL \
+            --exit-code 1
 
       - name: trivy dependency scan (observer)
-        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
-        with:
-          scan-type: fs
-          scan-ref: observer/requirements.txt
-          scanners: vuln
-          severity: HIGH,CRITICAL
-          exit-code: 1
+        run: |
+          docker run --rm \
+            -v "$PWD:/work" -w /work \
+            -v "$TRIVY_CACHE_DIR:/root/.cache/trivy" \
+            "$TRIVY_IMAGE" \
+            fs observer/requirements.txt \
+            --scanners vuln \
+            --severity HIGH,CRITICAL \
+            --exit-code 1
         # Image-layer scanning (the built inventory-api:ci / demo-observer:ci
         # images from the `build` job above) is a documented follow-up, not
         # done here -- see docs/owasp-security-review.md "Supply chain /
