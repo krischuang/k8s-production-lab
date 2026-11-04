@@ -54,7 +54,7 @@ Boundary enumeration source: `k8s/networkpolicy.yaml`, `k8s/observer-networkpoli
 | T10 | Denial of Service | High-volume request flood exhausts capacity before HPA reacts, or past `maxReplicas: 10` | `inventory-api` | Partial — HPA scales legitimate load; no rate limiting, no WAF | `k8s/hpa.yaml:12-13` (`maxReplicas: 10` is a hard ceiling); no rate-limiting annotation on `k8s/ingress.yaml` |
 | T11 | Elevation of Privilege | Compromised `inventory-api` pod attempts to read Secrets/ConfigMaps beyond its own two named objects | `inventory-api` ServiceAccount | RBAC Role scoped by `resourceNames`, `get`/`watch` only | `k8s/rbac.yaml:17-24`; verified by `tests/security/test_rbac_static.py` and (live, when run against a cluster) `tests/security/test_rbac_live.py::test_inventory_api_cannot_list_secrets_namespace_wide` |
 | T12 | Elevation of Privilege | Compromised `demo-observer` pod attempts to mutate Deployments/pods it can only read | `demo-observer` ServiceAccount | RBAC Role limited to `get`/`list`/`watch` on 4 resource kinds, no write verbs, no ClusterRole | `k8s/observer-rbac.yaml:14-28`; verified by `tests/security/test_rbac_static.py::test_observer_role_is_strictly_read_only` and `tests/security/test_rbac_live.py::test_observer_cannot_delete_deployments` |
-| T13 | Tampering | Attacker with exec/compromise access to the `postgres` container writes to its root filesystem (persistence, tooling install) | `postgres` container | Partial — `runAsNonRoot`, `allowPrivilegeEscalation: false`, `capabilities.drop: [ALL]` now set; `readOnlyRootFilesystem` deliberately **not** set | `k8s/postgres.yaml` (see inline comment); confirmed open by `trivy config k8s/postgres.yaml` → `KSV-0014` (HIGH), not suppressed in `.trivyignore` |
+| T13 | Tampering | Attacker with exec/compromise access to the `postgres` container writes to its root filesystem (persistence, tooling install) | `postgres` container | Mitigated — `runAsNonRoot`, `allowPrivilegeEscalation: false`, `capabilities.drop: [ALL]`, `readOnlyRootFilesystem: true` all set, with `/tmp` and `/var/run/postgresql` `emptyDir` mounts for the paths Postgres needs to write to | `k8s/postgres.yaml`; `trivy config k8s/postgres.yaml` → 0 findings; verified live on a `kind` cluster — `postgres` deployment reaches `1/1 Running`, readiness/liveness probes (`pg_isready`) pass |
 
 ## 4. Threat Scenarios (narrative)
 
@@ -121,7 +121,7 @@ single operator) — not a generic internet-facing production rating.
 | T10 | Low | Medium | Low-Medium | `kind`/local demo context makes a real flood unlikely, but the HPA ceiling (`maxReplicas: 10`) is a real limit |
 | T11 | Very Low | Medium | Low | Automated tests now assert this is denied |
 | T12 | Very Low | Medium | Low | Automated tests now assert this is denied |
-| T13 | Medium | Medium | **Medium — open** | Confirmed open by `trivy`, not suppressed, requires live-cluster verification to close |
+| T13 | Low | Medium | **Low — closed** | Fixed and verified live on a `kind` cluster; `trivy` finds 0 issues on `k8s/postgres.yaml` |
 
 ## 7. Residual Risks
 
@@ -131,30 +131,23 @@ glossed over:
 1. **T5 — No TLS.** Plaintext HTTP end-to-end. Acceptable only because this
    runs on a local, non-internet-exposed `kind` cluster. A real deployment
    would require cert-manager + a real Ingress TLS configuration.
-2. **T13 — `postgres` container `readOnlyRootFilesystem` not set.**
-   Confirmed open by `trivy config k8s/postgres.yaml` (`KSV-0014`, HIGH).
-   Not fixed in this pass because doing so correctly requires additional
-   `emptyDir` mounts for `/var/run/postgresql` and `/tmp`, and verification
-   against a live cluster that was not available when this change was
-   made. Fixing this without verification would be an unverified claim.
-3. **T2 — No admission control.** Nothing prevents a pod that already has
+2. **T2 — No admission control.** Nothing prevents a pod that already has
    create/patch rights in `inventory-prod` from applying misleading labels.
    `README.md:540` already self-discloses the absence of OPA/Gatekeeper/
    Kyverno/PodSecurity admission.
-4. **T3/T9 — Token lifetime, audience binding, and etcd encryption at
+3. **T3/T9 — Token lifetime, audience binding, and etcd encryption at
    rest** could not be verified without a live cluster's kube-apiserver
    configuration. Marked CANNOT VERIFY rather than assumed safe.
-5. **T7 — No observability/audit trail.** Already self-disclosed in
+4. **T7 — No observability/audit trail.** Already self-disclosed in
    `README.md:537`. There is no record to investigate after an incident
    beyond whatever `kubectl` happens to still show.
-6. **T10 — No rate limiting / WAF.** The HPA's `maxReplicas: 10` is a hard
+5. **T10 — No rate limiting / WAF.** The HPA's `maxReplicas: 10` is a hard
    ceiling, not a defense against an intentional flood.
 
 ## 8. Proposed Mitigations (prioritized, not yet implemented beyond this audit)
 
 | Priority | Mitigation | Addresses |
 |---|---|---|
-| P1 | Verify `readOnlyRootFilesystem: true` for `postgres` against a live cluster, adding `/tmp` and `/var/run/postgresql` `emptyDir` mounts as needed | T13 |
 | P1 | Add TLS termination at the Ingress (cert-manager + a real or self-signed CA for local use) | T5 |
 | P2 | Add OPA/Gatekeeper or Kyverno admission policy enforcing the same `securityContext` hardening on any future workload in `inventory-prod` | T2 |
 | P2 | Add basic rate limiting at the Ingress (`nginx.ingress.kubernetes.io/limit-rps`) | T10 |
