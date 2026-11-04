@@ -18,6 +18,9 @@ spec:
         app: demo-observer
     spec:
       serviceAccountName: demo-observer
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: demo-observer
           image: demo-observer:local

@@ -31,6 +31,14 @@ spec:
         app.kubernetes.io/version: v1.0.0
     spec:
       serviceAccountName: inventory-api
+      # Pod-level securityContext: seccompProfile applies to every container
+      # in the pod and has no per-container equivalent. The container-level
+      # hardening below (runAsNonRoot, readOnlyRootFilesystem, capabilities
+      # drop) still needs this to close the gap a scanner flags as "default
+      # security context" at the pod level (trivy KSV-0104/KSV-0118).
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       # Spread the 3 replicas across nodes instead of allowing the scheduler
       # to stack them. whenUnsatisfiable: ScheduleAnyway keeps the Deployment
       # schedulable even when the cluster doesn't have enough nodes to spread
